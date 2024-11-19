@@ -1,0 +1,89 @@
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
+import remarkGfm from 'remark-gfm';
+import { visit } from 'unist-util-visit';
+
+// マークダウンテーブルをパースしてJSONに変換する関数
+class MarkdownTableParser {
+  constructor() {
+    this.processor = unified()
+      .use(remarkParse)
+      .use(remarkGfm)  // GitHub Flavored Markdownのサポート（テーブル用）
+      .use(this.extractTables);
+  }
+
+  // テーブルを抽出するremarkプラグイン
+  extractTables = () => (tree) => {
+    const tables = [];
+
+    visit(tree, 'table', (node) => {
+      const [headerRow, ...dataRows] = node.children;
+      
+      // ヘッダーの抽出
+      const headers = this.extractRowContent(headerRow);
+      
+      // データ行の抽出と変換
+      const data = dataRows.map(row => {
+        const values = this.extractRowContent(row);
+        return this.createRowObject(headers, values);
+      });
+
+      tables.push(data);
+    });
+
+    // 最初のテーブルのみを返す（複数テーブル対応の場合は配列のまま返す）
+    return tables[0] || [];
+  }
+
+  // 行の内容を抽出
+  extractRowContent = (row) => {
+    return row.children.map(cell => 
+      cell.children[0]?.value || ''
+    );
+  }
+
+  // ヘッダーと値からオブジェクトを作成
+  createRowObject = (headers, values) => {
+    const obj = {};
+    headers.forEach((header, index) => {
+      obj[header.trim()] = values[index]?.trim() || '';
+    });
+    return obj;
+  }
+
+  // マークダウンを解析してJSONを返す
+  parse = (markdownContent) => {
+    try {
+      const file = this.processor.processSync(markdownContent);
+      return file.data || [];
+    } catch (error) {
+      console.error('Parse error:', error);
+      return [];
+    }
+  }
+}
+
+// 使用例を含むメイン処理
+const main = () => {
+  const parser = new MarkdownTableParser();
+  
+  // テスト用のマークダウンテーブル
+  const markdownTable = `
+| Name    | Age | City    |
+|---------|-----|---------|
+| John    | 30  | New York|
+| Alice   | 25  | London  |
+| Bob     | 35  | Tokyo   |
+  `;
+
+  // 変換を実行
+  const result = parser.parse(markdownTable);
+  
+  // 結果を表示
+  console.log(JSON.stringify(result, null, 2));
+
+  return result;
+};
+
+// エクスポート
+export { MarkdownTableParser, main };
