@@ -3,3 +3,160 @@ Test
 
 Dataclassは、Python 3.7以降で導入されたデータクラスの機能
 
+DjangoのRequestに関連する機能とuWSGIとの連携について説明します。
+
+1. Request/Response ミドルウェア
+```python
+from django.http import HttpRequest, HttpResponse
+
+class CustomMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponse:
+        # リクエスト処理前の処理
+        # 例：カスタムヘッダーの追加
+        request.META['CUSTOM_HEADER'] = 'custom_value'
+        
+        # リクエストの処理
+        response = self.get_response(request)
+        
+        # レスポンス処理後の処理
+        response['X-Custom-Header'] = 'value'
+        
+        return response
+```
+
+2. カスタムリクエストクラス
+```python
+from django.http import HttpRequest
+
+class CustomRequest(HttpRequest):
+    def __init__(self):
+        super().__init__()
+        self.custom_data = {}
+
+    def get_client_ip(self):
+        x_forwarded_for = self.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            return x_forwarded_for.split(',')[0]
+        return self.META.get('REMOTE_ADDR')
+```
+
+3. uWSGIとの連携設定（uwsgi.ini）
+```ini
+[uwsgi]
+# 基本設定
+http = :8000
+module = project.wsgi:application
+master = true
+processes = 4
+threads = 2
+
+# バッファサイズ設定
+buffer-size = 32768
+post-buffering = 65536
+
+# タイムアウト設定
+harakiri = 30
+socket-timeout = 30
+
+# static files
+static-map = /static=static
+static-expires = /* 7776000
+offload-threads = 2
+
+# logging
+log-format = %(addr) - %(user) [%(ltime)] "%(method) %(uri) %(proto)" %(status) %(size) "%(referer)" "%(uagent)"
+req-logger = file:/path/to/access.log
+logger = file:/path/to/error.log
+```
+
+4. リクエストのカスタマイズ処理（settings.py）
+```python
+# カスタムミドルウェアの追加
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'your_app.middleware.CustomMiddleware',
+    # ... 他のミドルウェア
+]
+
+# uWSGI関連の設定
+UWSGI_PARAMS = {
+    'max_requests': 1000,  # プロセスの最大リクエスト数
+    'reload_on_rss': 200,  # メモリ使用量による再起動
+}
+
+# タイムアウト設定
+REQUEST_TIMEOUT = 30
+```
+
+5. uWSGIでのシグナル処理
+```python
+from django.core.signals import request_started, request_finished
+from django.dispatch import receiver
+import uwsgi
+
+@receiver(request_started)
+def on_request_started(sender, **kwargs):
+    # リクエスト開始時の処理
+    uwsgi.set_user_harakiri(30)  # タイムアウトの設定
+
+@receiver(request_finished)
+def on_request_finished(sender, **kwargs):
+    # リクエスト終了時の処理
+    pass
+```
+
+6. ファイルアップロード処理のカスタマイズ
+```python
+from django.core.files.uploadhandler import TemporaryFileUploadHandler
+
+class CustomUploadHandler(TemporaryFileUploadHandler):
+    def handle_raw_input(self, input_data, META, content_length, boundary, encoding=None):
+        # アップロード前の処理
+        return super().handle_raw_input(input_data, META, content_length, boundary, encoding)
+
+    def receive_data_chunk(self, raw_data, start):
+        # チャンク処理
+        return super().receive_data_chunk(raw_data, start)
+```
+
+7. エラーハンドリング
+```python
+from django.conf.urls import handler500
+from django.http import JsonResponse
+
+def custom_error_handler(request, *args, **kwargs):
+    if request.headers.get('Accept') == 'application/json':
+        return JsonResponse({
+            'error': 'Internal Server Error',
+            'request_id': request.META.get('REQUEST_ID')
+        }, status=500)
+    return handler500(request, *args, **kwargs)
+```
+
+主な注意点とベストプラクティス：
+
+1. パフォーマンス最適化
+- リクエストのバッファリング設定
+- 静的ファイルの処理
+- キャッシュの適切な使用
+
+2. セキュリティ対策
+- XSSやCSRF対策
+- レート制限
+- 入力値のバリデーション
+
+3. モニタリングと運用
+- ログ収集
+- メトリクス監視
+- エラートラッキング
+
+4. スケーラビリティ
+- プロセス数の適切な設定
+- コネクションプーリング
+- キャッシュ戦略
+
+これらの機能をカスタマイズする際は、アプリケーションの要件や負荷状況に応じて適切な設定を行うことが重要です。必要に応じて、特定の部分についてさらに詳しく説明できます。
+
